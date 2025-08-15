@@ -505,6 +505,41 @@ public:
 						case SDLK_PAGEDOWN:  key = STB_TEXTEDIT_K_LINEEND;  break;
 					}
 
+					if (e.key.key == SDLK_C && SDL_GetModState() & SDL_KMOD_CTRL && text_edit_state.state.select_start - text_edit_state.state.select_end != 0) {
+						int min = std::min(text_edit_state.state.select_start, text_edit_state.state.select_end);
+						int max = std::max(text_edit_state.state.select_start, text_edit_state.state.select_end);
+						std::string copy(text_edit_state.string + min, max - min);
+
+						SDL_SetClipboardText(copy.c_str());
+
+						showingCursor = true;
+						currentTime = std::chrono::high_resolution_clock::now();
+					}
+
+					if (e.key.key == SDLK_X && SDL_GetModState() & SDL_KMOD_CTRL && text_edit_state.state.select_start - text_edit_state.state.select_end != 0) {
+						int min = std::min(text_edit_state.state.select_start, text_edit_state.state.select_end);
+						int max = std::max(text_edit_state.state.select_start, text_edit_state.state.select_end);
+						std::string cut(text_edit_state.string + min, max - min);
+
+						SDL_SetClipboardText(cut.c_str());
+						stb_textedit_cut(&text_edit_state, &text_edit_state.state);
+
+						showingCursor = true;
+						currentTime = std::chrono::high_resolution_clock::now();
+					}
+
+					if (e.key.key == SDLK_V && SDL_GetModState() & SDL_KMOD_CTRL) {
+						SDL_Event event;
+
+						event.type = SDL_EVENT_TEXT_INPUT;
+						event.text.text = SDL_GetClipboardText();
+
+						SDL_PushEvent(&event);
+
+						showingCursor = true;
+						currentTime = std::chrono::high_resolution_clock::now();
+					}
+
 					if (e.key.key == SDLK_A && SDL_GetModState() & SDL_KMOD_CTRL) {
 						text_edit_state.state.select_start = 0;
 						text_edit_state.state.select_end = text_edit_state.stringlen;
@@ -523,7 +558,15 @@ public:
 					}
 
 				} else if (e.type == SDL_EVENT_TEXT_INPUT) {
-					stb_textedit_key(&text_edit_state, &text_edit_state.state, e.text.text[0]);
+					int length = std::strlen(e.text.text);
+
+					if (length > 1) {
+						stb_textedit_paste(&text_edit_state, &text_edit_state.state, e.text.text, length);
+						SDL_free((void*) e.text.text);
+					}
+					else {
+						stb_textedit_key(&text_edit_state, &text_edit_state.state, e.text.text[0]);
+					}
 
 					showingCursor = true;
 					currentTime = std::chrono::high_resolution_clock::now();
