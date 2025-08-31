@@ -202,30 +202,53 @@ void getTextSize(text_control* str, std::string_view text, int* w, int* h) {
 		return;
 	}
 
-	//double width = 0;
-	//double height = 0;
-	//
-	//const msdf_atlas::GlyphGeometry* glyph;
-	//double l, b, r, t;
-	//for (int i = 0; i < text.length() - 1; ++i)
-	//{
-	//	glyph = g_AppContext.fontGeometry->getGlyph(unicodes[i]);
-	//	glyph->getQuadPlaneBounds(l, b, r, t);
-	//	width += (r - l + glyph->getAdvance()) * 9;
-	//	//height = std::max(height, (t - b) * 24);
-	//}
-	//
-	//glyph = g_AppContext.fontGeometry->getGlyph(unicodes[text.length() - 1]);
-	//glyph->getQuadPlaneBounds(l, b, r, t);
-	//width += (r - l) * 9;
-	//height = getFontHeight(str); //std::max(height, (t - b) * 24);
-	//
-	//int newWidth = static_cast<int>(width);
-	//int newHeight = static_cast<int>(height);
-	if (w) *w = 9 * text.length(); //newWidth;
-	if (h) *h = getFontHeight(str); //newHeight;
+	const msdf_atlas::FontGeometry* fontGeometry = g_AppContext.fontGeometry.get();
+	const msdfgen::FontMetrics& metrics = fontGeometry->getMetrics();
 
-	//TTF_GetStringSize(g_AppContext.font, text.data(), text.length(), w, h);
+	// Scaling factor to convert font units to your desired pixel size (e.g., 24px)
+	double fsScale = 24.0 / (metrics.ascenderY - metrics.descenderY);
+	double lineHeight = fsScale * metrics.lineHeight;
+
+	double maxWidth = 0.0;
+	double currentLineWidth = 0.0;
+	double totalHeight = getFontHeight(str);
+
+	for (size_t i = 0; i < text.length(); ++i) {
+		char character = text[i];
+
+		if (character == '\n') {
+			maxWidth = std::max(maxWidth, currentLineWidth);
+			currentLineWidth = 0;
+			totalHeight += lineHeight;
+			continue;
+		}
+		else if (character == '\r') {
+			continue;
+		}
+
+		double advance = 0.0;
+		const msdf_atlas::GlyphGeometry* glyph = fontGeometry->getGlyph(character);
+		if (!glyph) {
+			glyph = fontGeometry->getGlyph('?');
+		}
+		if (!glyph) {
+			continue;
+		}
+
+		advance = glyph->getAdvance();
+
+		if (i < text.length() - 1) {
+			char nextCharacter = text[i + 1];
+			fontGeometry->getAdvance(advance, character, nextCharacter);
+		}
+
+		currentLineWidth += fsScale * advance;
+	}
+
+	maxWidth = std::max(maxWidth, currentLineWidth);
+
+	if (w) *w = static_cast<int>(ceil(maxWidth));
+	if (h) *h = static_cast<int>(ceil(totalHeight));
 }
 
 struct TextLayoutFormat
@@ -319,7 +342,6 @@ void createTextTexture(float offsetX, float offsetY, text_control* str, std::str
 		al *= texelWidth, ab *= texelHeight, ar *= texelWidth, at *= texelHeight;
 
 		// render here
-
 		int baseVert = numVerts;
 		// 0
 		data[numVerts].pos[0] = pl;
@@ -396,7 +418,7 @@ void createTextTexture(float offsetX, float offsetY, text_control* str, std::str
 		bgfx::setIndexBuffer(&indexBuffer, 0, numIndices);
 		bgfx::setVertexBuffer(0, &vertexBuffer, 0, numVerts);
 		bgfx::setTexture(0, tex_uniform, g_AppContext.fontAtlas);
-		bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA | BGFX_STATE_BLEND_ALPHA);
+		bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA | BGFX_STATE_BLEND_NORMAL);
 		bgfx::submit(0, program);
 	}
 }
@@ -405,9 +427,8 @@ void createTextTexture(float offsetX, float offsetY, text_control* str, std::str
 void layout_func(StbTexteditRow *row, text_control *str, int start_i) {
 	if (!g_AppContext.ft) return;
 	const int remaining_chars = str->string.length() - start_i;
-	std::string_view text_view = std::string_view(str->string.data() + start_i, remaining_chars);
 	int width = 0;
-	getTextSize(str, text_view, &width, nullptr);
+	getTextSize(str, std::string_view(str->string.data() + start_i, remaining_chars), &width, nullptr);
 	row->x0 = 0.0f;
 	row->x1 = (float)width;
 	row->baseline_y_delta = (float) getFontHeight(str);
@@ -459,7 +480,6 @@ std::vector<char> ReadAssetFile(const std::string& fileName, const std::string& 
 	const int64_t size = SDL_SeekIO(file, 0, SDL_IO_SEEK_END);
 	data.resize(size);
 
-	// go back to the start of the file. TODO: Is this right?
 	SDL_SeekIO(file, -size, SDL_IO_SEEK_END);
 	if (SDL_ReadIO(file, data.data(), size) == 0 && SDL_GetIOStatus(file) != SDL_IO_STATUS_EOF)
 	{
@@ -633,10 +653,6 @@ public:
 			createTextTexture(TEXT_BOX_X, TEXT_BOX_Y, &text_edit_state, text_edit_state.string, layout, textured_program, tex_uniform);
 		}
 
-		//if (bgfx::isValid(g_AppContext.fontAtlas)) {
-		//	drawTexturedQuad(TEXT_BOX_X, TEXT_BOX_Y, 176, 176, g_AppContext.fontAtlas);
-		//}
-
 		// --- Draw Cursor ---
 		if (showingCursor) {
 			int cursor_x = 0, cursor_h = 0;
@@ -666,27 +682,6 @@ public:
 			bgfx::submit(0, solid_program);
 		}
 	}
-
-	void drawTexturedQuad(float x, float y, float w, float h, bgfx::TextureHandle texture) {
-		bgfx::TransientVertexBuffer tvb;
-		bgfx::TransientIndexBuffer tib;
-		if (bgfx::allocTransientBuffers(&tvb, PosTexCoordVertex::s_decl, 4, &tib, 6)) {
-			PosTexCoordVertex* vertex = (PosTexCoordVertex*)tvb.data;
-			vertex[0] = {x,     y,     0.0f, 1.0f};
-			vertex[1] = {x + w, y,     1.0f, 1.0f};
-			vertex[2] = {x + w, y + h, 1.0f, 0.0f};
-			vertex[3] = {x,     y + h, 0.0f, 0.0f};
-			uint16_t* indices = (uint16_t*)tib.data;
-			indices[0] = 0; indices[1] = 1; indices[2] = 2;
-			indices[3] = 0; indices[4] = 2; indices[5] = 3;
-			bgfx::setVertexBuffer(0, &tvb);
-			bgfx::setIndexBuffer(&tib);
-			bgfx::setTexture(0, tex_uniform, texture);
-			bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_BLEND_NORMAL);
-			bgfx::submit(0, textured_program);
-		}
-	}
-
 
 	void run() {
 		// Initialize vertex declarations once
